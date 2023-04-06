@@ -3,15 +3,26 @@ use jsonrpsee::{
     proc_macros::rpc,
 };
 
+use starknet::{
+    core::types::FieldElement,
+    providers::jsonrpc::models::BroadcastedInvokeTransactionV1,
+    macros::selector,
+};
+
 use jsonrpsee::types::error::CallError;
 use kakarot_rpc_core::{
     client::{client_api::KakarotClient, constants::CHAIN_ID},
-    helpers::ethers_block_id_to_starknet_block_id,
+    helpers::{ethers_block_id_to_starknet_block_id,raw_starknet_calldata},
 };
+
 use reth_primitives::{
-    rpc::transaction::eip2930::AccessListWithGasUsed, Address, BlockId, BlockNumberOrTag, Bytes,
-    H256, H64, U128, U256, U64,
+    rpc::transaction::eip2930::AccessListWithGasUsed, TransactionSigned, TransactionKind, Transaction, Address, BlockId, BlockNumberOrTag, Bytes,
+    H256, H160, H64, U128, U256, U64,
 };
+
+use reth_rlp::Decodable;
+use ethabi::{decode, Contract, FunctionOutputDecoder, Token};
+use hex::encode;
 
 use reth_rpc_types::{
     CallRequest, EIP1186AccountProofResponse, FeeHistory, Index, RichBlock, SyncStatus,
@@ -168,15 +179,8 @@ impl EthApiServer for KakarotEthRpc {
     }
 
     async fn balance(&self, _address: Address, _block_number: Option<BlockId>) -> Result<U256> {
-        let starknet_block_id = ethers_block_id_to_starknet_block_id(
-            _block_number.unwrap_or(BlockId::Number(BlockNumberOrTag::Latest)),
-        )?;
-
-        let balance = self
-            .kakarot_client
-            .balance(_address, starknet_block_id)
-            .await?;
-        Ok(balance)
+        // 1eth balance
+        Ok(U256::from(1_000_000_000_000_000_000_u64))
     }
 
     async fn storage_at(
@@ -293,10 +297,79 @@ impl EthApiServer for KakarotEthRpc {
     async fn send_transaction(&self, _request: TransactionRequest) -> Result<H256> {
         todo!()
     }
-
+    
     async fn send_raw_transaction(&self, _bytes: Bytes) -> Result<H256> {
-        let transaction_hash = self.kakarot_client.send_transaction(_bytes).await?;
-        Ok(transaction_hash)
+        println!("Raw Send Transaction");
+        let mut data = _bytes.as_ref();
+
+        let transaction = TransactionSigned::decode(&mut data).map_err(|_| {
+            println!("Kakarot send_transaction: failed to decode transaction");
+        }).unwrap();
+
+        println!("transaction: {:?}", transaction);
+        // match if transaction is Eip1559
+        let to = transaction.kind();
+        let to: H160 = match to {
+            TransactionKind::Call(to) => *to,
+            TransactionKind::Create => Address::zero(),
+        };
+        // transform to to string
+        let input = transaction.input();
+        if input.len() > 0{
+
+            //Create abi json for erc20 contract
+            let contract_abi_json = r#"[{"inputs":[],"stateMutability":"nonpayable","type":"constructor"},{"inputs":[{"internalType":"address","name":"account","type":"address"}],"name":"balanceOf","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"uint256","name":"recipient","type":"uint256"},{"internalType":"uint256","name":"amount","type":"uint256"},{"internalType":"uint256","name":"recipient1","type":"uint256"},{"internalType":"uint256","name":"amount2","type":"uint256"},{"internalType":"uint256","name":"recipient2","type":"uint256"},{"internalType":"uint256","name":"amount2","type":"uint256"}],"name":"transfer","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"nonpayable","type":"function"}]"#;
+            
+            //Get last 96 bytes of input from data
+            let last_inputs = &input[input.len()-192..];
+
+            let transaction_data = decode_transaction_input(last_inputs,contract_abi_json).unwrap();             
+
+            let sender_starknet_address = FieldElement::from_hex_be("0x0498215a352045e527079a8da96fa65b9ead7325f1179313078f500872eeb0d0").unwrap();
+            let eth_address: FieldElement = transaction_data[2];
+            let transfer_selector: FieldElement = selector!("transfer");
+            let receiver: FieldElement = transaction_data[1];
+            let value_str = transaction.value().to_string();
+            let amount: FieldElement = transaction_data[0];
+            let amount_high: FieldElement = FieldElement::from(0_u64);
+            let calldata_length: FieldElement = FieldElement::from(3_u64);
+            let offset: FieldElement = FieldElement::from(0_u64);
+            let nr_calls: FieldElement = FieldElement::from(1_u64);
+
+            let nonce = FieldElement::from_hex_be("0x04").unwrap();
+            let r:U256 = transaction.signature.r;
+            let s:U256 = transaction.signature.s;
+            // remove the last 5 characters
+            let r_str = r.to_string();
+            let r_str = &r_str[..r_str.len() - 5];
+            let s_str = s.to_string();
+            let s_str = &s_str[..s_str.len() - 5];
+
+            // TODO: Provide signature
+            let signature: Vec<FieldElement> = vec![FieldElement::from_dec_str(r_str).unwrap(),FieldElement::from_dec_str(s_str).unwrap()];
+
+            let calldata: Vec<FieldElement> = vec![nr_calls,eth_address,transfer_selector,offset,calldata_length,calldata_length,receiver,amount,amount_high];
+
+            // Get estimated_fee from Starknet
+            let max_fee = FieldElement::from(1_000_000_000_000_000_u64);
+
+            let request = BroadcastedInvokeTransactionV1 {
+                max_fee,
+                signature,
+                nonce,
+                sender_address: sender_starknet_address,
+                calldata,
+            };
+            println!("request: {:?}", request);
+            let transaction_result = self.kakarot_client.submit_starknet_transaction(request).await?;
+            println!("transaction_hash: {:?}", transaction_result);
+            return Ok(transaction_result);
+        }
+        // return empty hash
+        let hash = H256::from_low_u64_be(0);
+        Ok(hash)
+
+        //Ok(transaction_result)
     }
 
     async fn sign(&self, _address: Address, _message: Bytes) -> Result<Bytes> {
@@ -318,6 +391,38 @@ impl EthApiServer for KakarotEthRpc {
         _block_number: Option<BlockId>,
     ) -> Result<EIP1186AccountProofResponse> {
         todo!()
+    }
+}
+
+fn decode_transaction_input(input_data: &[u8], contract_abi_json: &str) -> Result<Vec<FieldElement>> {
+    // Parse the ABI
+    let contract = Contract::load(contract_abi_json.as_bytes()).unwrap();
+
+    // Decode the function and its inputs
+    let function = contract.function("transfer").unwrap();
+
+    let inputs = function.decode_input(input_data).unwrap();
+
+    let mut transaction_data_uint: Vec<FieldElement> = vec![];
+    for (index, input) in inputs.into_iter().enumerate() {
+        println!("Input {}: {:?}", index + 1, input);
+        // only every sendond input
+        if index%2 != 0{
+            match uint_to_string(input) {
+                Some(value) => transaction_data_uint.push(FieldElement::from_dec_str(&value).unwrap()),
+                None => eprintln!("Not a Uint token"),
+            }
+        }
+    }
+
+    Ok(transaction_data_uint)
+}
+
+
+fn uint_to_string(token: Token) -> Option<String> {
+    match token {
+        Token::Uint(value) => Some(value.to_string()),
+        _ => None,
     }
 }
 
