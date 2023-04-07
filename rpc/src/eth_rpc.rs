@@ -344,11 +344,22 @@ impl EthApiServer for KakarotEthRpc {
             let r_str = &r_str[..r_str.len() - 5];
             let s_str = s.to_string();
             let s_str = &s_str[..s_str.len() - 5];
+            //Still need v?
 
             // TODO: Provide signature
-            let signature: Vec<FieldElement> = vec![FieldElement::from_dec_str(r_str).unwrap(),FieldElement::from_dec_str(s_str).unwrap()];
+            let signature: Vec<FieldElement> = vec![,FieldElement::from_dec_str(s_str).unwrap()];
 
-            let calldata: Vec<FieldElement> = vec![nr_calls,eth_address,transfer_selector,offset,calldata_length,calldata_length,receiver,amount,amount_high];
+            let calldata: Vec<FieldElement> = vec![
+                nr_calls,
+                eth_address,
+                transfer_selector,
+                offset,
+                calldata_length,
+                calldata_length,
+                receiver,
+                amount,
+                amount_high
+            ];
 
             // Get estimated_fee from Starknet
             let max_fee = FieldElement::from(1_000_000_000_000_000_u64);
