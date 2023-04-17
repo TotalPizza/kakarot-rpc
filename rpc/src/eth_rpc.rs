@@ -7,6 +7,7 @@ use starknet::{
     core::types::FieldElement,
     providers::jsonrpc::models::BroadcastedInvokeTransactionV1,
     macros::selector,
+    core::utils::{starknet_keccak,get_selector_from_name}
 };
 
 use jsonrpsee::types::error::CallError;
@@ -318,29 +319,29 @@ impl EthApiServer for KakarotEthRpc {
         if input.len() > 0{
 
             //Create abi json for erc20 contract
-            let contract_abi_json = r#"[{"{"inputs":[{"internalType":"string[]","name":"signatures","type":"string[]"}],"name":"multicall","outputs":[],"stateMutability":"nonpayable","type":"function"}]"#;
+            let contract_abi_json = r#"[{"inputs":[{"internalType":"uint256","name":"to","type":"uint256"},{"internalType":"uint256","name":"selector","type":"uint256"},{"internalType":"uint256[]","name":"calldata","type":"uint256[]"}],"name":"multicall","outputs":[],"stateMutability":"nonpayable","type":"function"}]"#;
             
-            //Get last 96 bytes of input from data
-            let last_inputs = &input[input.len()-192..];
-            /*
-            let transaction_data = decode_transaction_input(input,contract_abi_json).unwrap();             
+            //remove the first 4 bytes of input
+            let input = &input[4..];
+            
+            let transaction_data = decode_transaction_input(input,contract_abi_json).unwrap();
+            print!("transaction_data: {:?}", transaction_data);             
             
             // Account Address
             let sender_starknet_address = FieldElement::from_hex_be("0x0498215a352045e527079a8da96fa65b9ead7325f1179313078f500872eeb0d0").unwrap();
             // Contract Address
-            let eth_address: FieldElement = transaction_data[2];
+            let to_address: FieldElement = transaction_data[0];
             // Selector
-            let transfer_selector: FieldElement = selector!("transfer");
+            // Trim zeros and encode selector
+            let selector_bytes = transaction_data[1].to_bytes_be();
+            let selector = starknet_keccak(&selector_bytes.iter().filter(|&x| *x != 0).cloned().collect::<Vec<u8>>());
             // Calldata
-            let receiver: FieldElement = transaction_data[1];
-            let value_str = transaction.value().to_string();
-            let amount: FieldElement = transaction_data[0];
-            let amount_high: FieldElement = FieldElement::from(0_u64);
-            let calldata_length: FieldElement = FieldElement::from(3_u64);
+            let calldata_length: FieldElement = FieldElement::from(transaction_data.len() as u64-2_u64);
             let offset: FieldElement = FieldElement::from(0_u64);
             let nr_calls: FieldElement = FieldElement::from(1_u64);
-
-            let nonce = FieldElement::from_hex_be("0x04").unwrap();
+            // Nonce
+            let nonce = FieldElement::from(transaction.nonce());
+            //Signature
             let r:U256 = transaction.signature.r;
             let s:U256 = transaction.signature.s;
             // remove the last 5 characters
@@ -353,17 +354,19 @@ impl EthApiServer for KakarotEthRpc {
             // TODO: Provide signature
             let signature: Vec<FieldElement> = vec![FieldElement::from_dec_str(r_str).unwrap(),FieldElement::from_dec_str(s_str).unwrap()];
 
-            let calldata: Vec<FieldElement> = vec![
+            let mut calldata: Vec<FieldElement> = vec![
                 nr_calls,
-                eth_address,
-                transfer_selector,
+                to_address,
+                selector,
                 offset,
                 calldata_length,
                 calldata_length,
-                receiver,
-                amount,
-                amount_high
             ];
+
+            //append payload to calldata
+            for i in 2..transaction_data.len() {
+                calldata.push(transaction_data[i]);
+            }
 
             // Get estimated_fee from Starknet
             let max_fee = FieldElement::from(1_000_000_000_000_000_u64);
@@ -375,21 +378,14 @@ impl EthApiServer for KakarotEthRpc {
                 sender_address: sender_starknet_address,
                 calldata,
             };
-            */
-            //println!("request: {:?}", request);
-            //let transaction_result = self.kakarot_client.submit_starknet_transaction(request).await?;
-            //println!("transaction_hash: {:?}", transaction_result);
-            //return Ok(transaction_result);
+            //println!("BYTES!: {:?}", bytes_to_felt_vec(&_bytes));        
+            //println!("TX HASH: {:?}",transaction.hash());
+            
+            println!("request: {:?}", request);
+            let transaction_result = self.kakarot_client.submit_starknet_transaction(request).await?;
+            println!("transaction_hash: {:?}", transaction_result);
+            return Ok(transaction_result);
         }
-        let sender_starknet_address = FieldElement::from_hex_be("0x0498215a352045e527079a8da96fa65b9ead7325f1179313078f500872eeb0d0").unwrap();
-
-        let nonce = FieldElement::from(transaction.nonce());
-        
-        // Get estimated_fee from Starknet
-        let max_fee = FieldElement::from(1_000_000_000_000_000_u64);
-        println!("BYTES!: {:?}", bytes_to_felt_vec(&_bytes));        
-        
-        println!("TX HASH: {:?}",transaction.hash());
         //let transaction_result = self.kakarot_client.submit_starknet_transaction(request).await?;
         //println!("transaction_hash: {:?}", transaction_result);
         //Ok(transaction_result)
@@ -428,22 +424,29 @@ fn decode_transaction_input(input_data: &[u8], contract_abi_json: &str) -> Resul
     let contract = Contract::load(contract_abi_json.as_bytes()).unwrap();
 
     // Decode the function and its inputs
-    let function = contract.function("transfer").unwrap();
+    let function = contract.function("multicall").unwrap();
 
     let inputs = function.decode_input(input_data).unwrap();
-
+    println!("INPUTS SER: {:?}", inputs);
     let mut transaction_data_uint: Vec<FieldElement> = vec![];
     for (index, input) in inputs.into_iter().enumerate() {
         println!("Input {}: {:?}", index + 1, input);
-        // only every sendond input
-        if index%2 != 0{
-            match uint_to_string(input) {
-                Some(value) => transaction_data_uint.push(FieldElement::from_dec_str(&value).unwrap()),
-                None => eprintln!("Not a Uint token"),
+        // if token is Array
+        match input {
+            Token::Array(tokens) => {
+                for token in tokens {
+                    match uint_to_string(token) {
+                        Some(value) => {
+                            transaction_data_uint.push(FieldElement::from_dec_str(&value).unwrap())
+                        }
+                        None => eprintln!("Not a Uint token"),
+                    }
+                }
             }
+            Token::Uint(value) => transaction_data_uint.push(FieldElement::from_dec_str(&value.to_string()).unwrap()),
+            _ => eprintln!("Not a Uint token"),
         }
     }
-
     Ok(transaction_data_uint)
 }
 
