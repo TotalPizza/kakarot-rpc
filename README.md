@@ -1,5 +1,5 @@
 <div align="center">
-  <h1>Kakarot RPC</h1>
+  <h1>Kakarot RPC - Remixed</h1>
   <img src="docs/images/logo.png" height="200">
   <br />
   <a href="https://github.com/sayajin-labs/kakarot-rpc/issues/new?assignees=&labels=bug&template=01_BUG_REPORT.md&title=bug%3A+">
