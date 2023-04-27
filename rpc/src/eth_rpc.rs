@@ -317,7 +317,6 @@ impl EthApiServer for KakarotEthRpc {
         // transform to to string
         let input = transaction.input();
         if input.len() > 0{
-
             //Create abi json for erc20 contract
             let contract_abi_json = r#"[{"inputs":[{"internalType":"uint256","name":"to","type":"uint256"},{"internalType":"uint256","name":"selector","type":"uint256"},{"internalType":"uint256[]","name":"calldata","type":"uint256[]"}],"name":"multicall","outputs":[],"stateMutability":"nonpayable","type":"function"}]"#;
             
@@ -325,10 +324,10 @@ impl EthApiServer for KakarotEthRpc {
             let input = &input[4..];
             
             let transaction_data = decode_transaction_input(input,contract_abi_json).unwrap();
-            print!("transaction_data: {:?}", transaction_data);             
+            print!("transaction_data: {:?}", transaction_data); 
             
             // Account Address
-            let sender_starknet_address = FieldElement::from_hex_be("0x0498215a352045e527079a8da96fa65b9ead7325f1179313078f500872eeb0d0").unwrap();
+            let sender_starknet_address = FieldElement::from_hex_be("0x06d324601b008ba0393e541a3b8f4aab5b9c07a2298f5175d316664ae863728f").unwrap();
             // Contract Address
             let to_address: FieldElement = transaction_data[0];
             // Selector
@@ -336,40 +335,45 @@ impl EthApiServer for KakarotEthRpc {
             let selector_bytes = transaction_data[1].to_bytes_be();
             let selector = starknet_keccak(&selector_bytes.iter().filter(|&x| *x != 0).cloned().collect::<Vec<u8>>());
             // Calldata
-            let calldata_length: FieldElement = FieldElement::from(transaction_data.len() as u64-2_u64);
+            let calldata_length: FieldElement = FieldElement::from(transaction_data.len());
             let offset: FieldElement = FieldElement::from(0_u64);
             let nr_calls: FieldElement = FieldElement::from(1_u64);
             // Nonce
             let nonce = FieldElement::from(transaction.nonce());
-            //Signature
-            let r:U256 = transaction.signature.r;
-            let s:U256 = transaction.signature.s;
-            // remove the last 5 characters
-            let r_str = r.to_string();
-            let r_str = &r_str[..r_str.len() - 5];
-            let s_str = s.to_string();
-            let s_str = &s_str[..s_str.len() - 5];
-            //Still need v?
-
-            // TODO: Provide signature
-            let signature: Vec<FieldElement> = vec![FieldElement::from_dec_str(r_str).unwrap(),FieldElement::from_dec_str(s_str).unwrap()];
+            // We don't utilize this atm....wouldn't be feasible with multiple signers
+            //let signature: Vec<FieldElement> = vec![];
 
             let mut calldata: Vec<FieldElement> = vec![
                 nr_calls,
                 to_address,
                 selector,
                 offset,
-                calldata_length,
+                calldata_length-FieldElement::from(7_u64),
                 calldata_length,
             ];
+            
+            //signatures
+            calldata.push(transaction_data[2]);
+            calldata.push(transaction_data[3]);
+            calldata.push(transaction_data[4]);
+            calldata.push(transaction_data[5]);
+            calldata.push(transaction_data[6]);
+            //append nonce and chainID
+            calldata.push(FieldElement::from(CHAIN_ID));
+            calldata.push(FieldElement::from(transaction.nonce()));
+            //append contract address and selector
+            calldata.push(to_address);
+            calldata.push(selector);
 
             //append payload to calldata
-            for i in 2..transaction_data.len() {
+            for i in 7..transaction_data.len() {
                 calldata.push(transaction_data[i]);
             }
-
+            println!("calldata: {:?}", calldata);
             // Get estimated_fee from Starknet
             let max_fee = FieldElement::from(1_000_000_000_000_000_u64);
+
+            let signature = vec![];
 
             let request = BroadcastedInvokeTransactionV1 {
                 max_fee,
